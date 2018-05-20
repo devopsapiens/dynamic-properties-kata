@@ -25,8 +25,8 @@ public class DynamicPropertyFactory<T> {
 
 	}
 
-    @SuppressWarnings("unused")
-	private static final ConcurrentHashMap<String, DynamicProperty> CREATED_PROPERTIES = new ConcurrentHashMap<String, DynamicProperty>();
+    //@SuppressWarnings("unused")
+	//private static final ConcurrentHashMap<String, DynamicProperty> CREATED_PROPERTIES = new ConcurrentHashMap<String, DynamicProperty>();
     
 	/**
 	 * Creates an {@link DynamicProperty} instance with <code>initialValue</code>
@@ -41,9 +41,7 @@ public class DynamicPropertyFactory<T> {
 	public static <T> DynamicProperty<T> create(T initialValue) {
 
 		DynamicProperty<T> dynamicProperty = new DynamicPropertyWrapper<T>(initialValue);
-		
-		CREATED_PROPERTIES.put(dynamicProperty.toString(), dynamicProperty);
-		
+		//CREATED_PROPERTIES.put(dynamicProperty.toString(), dynamicProperty);
 		return dynamicProperty;
 	}
 
@@ -78,8 +76,7 @@ public class DynamicPropertyFactory<T> {
 	public static <T> DynamicProperty<T> create(Callable<T> read, Observer<T> write) {
 
 		DynamicProperty<T> dynamicProperty = new DynamicPropertyWrapper<T>(write, read);
-		
-		CREATED_PROPERTIES.put(dynamicProperty.toString(), dynamicProperty);
+		//CREATED_PROPERTIES.put(dynamicProperty.toString(), dynamicProperty);
 		return dynamicProperty;
 	}
 
@@ -89,11 +86,13 @@ public class DynamicPropertyFactory<T> {
 	 * @param <T>
 	 */
 private static final class DynamicPropertyWrapper<T> implements DynamicProperty<T> {
-		
+	
+
 		private volatile T property;
 		
-		private final Set<Observer> callbacks = new CopyOnWriteArraySet<Observer>();
-
+		@SuppressWarnings("rawtypes")
+		private final Set<Closeable> callbacks = new CopyOnWriteArraySet<Closeable>();
+		
 		//Constructor
 		protected DynamicPropertyWrapper(Observer<T> write, Callable<T> read) {
 			try {
@@ -116,21 +115,32 @@ private static final class DynamicPropertyWrapper<T> implements DynamicProperty<
 		 * @param InitializeProperty Used to identify if the set Value was call from Create Method or if is an update - set property call.
 		 */
 		private  void setProperty(Observer<T> write, T value, boolean InitializeProperty) {
-
+		
 			if(InitializeProperty) {
 				property = value;
 				return;
 			}
 			
-			//If this method was not invoked from Create method, is not a new Dynamic Property so , we can consider that is "an update"
+			Closeable cls = subscribe(write);
+			boolean notifyChange = ((CloseableProperty)cls).notifyChange();
+			if(notifyChange) {
+			callbacks.add(cls);
+			if(!property.equals(value)) {
 			property = value;
-			if (write !=null) {
-				subscribe(write);
-			    callbacks.forEach(call -> call.notify());	
+			notifyObservers();
 			}
-			
+			}
 		}
 
+		private void notifyObservers() {
+			callbacks.forEach(call -> {
+				try {
+					call.close();
+				} catch (IOException e) {
+					e.printStackTrace();
+				}
+			});	
+		}
 
 		@Override
 		public synchronized T getValue() {
@@ -145,14 +155,35 @@ private static final class DynamicPropertyWrapper<T> implements DynamicProperty<
 
 		@Override
 		public Closeable subscribe(Observer<T> callback) {
-			Closeable cls = new Closeable() {
-				
-				@Override
-				public void close() throws IOException {
-					callbacks.add(callback);
-				}
-			};
+			Closeable cls = new CloseableProperty(callback);
 			return cls;
+		}
+
+		private  final class CloseableProperty implements Closeable {
+			Observer<T> observer;
+			boolean notifyChange = true;
+			public CloseableProperty(Observer<T> write) {
+				if(write!=null) {
+				observer = write;
+				}else {
+					observer = new Observer<T>() {
+						@Override
+						public void observe(T value) {
+						}
+					};
+					notifyChange = false;
+				}
+			}
+			@Override
+			public void close() throws IOException {
+				synchronized (observer) {
+					observer.notifyAll();
+				}
+			
+			}
+			public boolean notifyChange() {
+				return notifyChange;
+			}
 		}
 	}
 }
