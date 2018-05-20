@@ -5,10 +5,12 @@ import java.io.IOException;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
 
 /**
  * Static factory methods to create {@link DynamicProperty} instances.
@@ -23,6 +25,9 @@ public class DynamicPropertyFactory<T> {
 
 	}
 
+    @SuppressWarnings("unused")
+	private static final ConcurrentHashMap<String, DynamicProperty> CREATED_PROPERTIES = new ConcurrentHashMap<String, DynamicProperty>();
+    
 	/**
 	 * Creates an {@link DynamicProperty} instance with <code>initialValue</code>
 	 *
@@ -34,14 +39,11 @@ public class DynamicPropertyFactory<T> {
 	 * @return
 	 */
 	public static <T> DynamicProperty<T> create(T initialValue) {
-		logger.info("<<<<<<<<<-------- CALL CREATE DYN PROPERTY -> " + initialValue.toString());
 
 		DynamicProperty<T> dynamicProperty = new DynamicPropertyWrapper<T>(initialValue);
-		logger.debug("DYNAMIC PROPERTY CREATED -> " + dynamicProperty.toString());
-
-		dynamicProperty.setValue(initialValue);
-
-		logger.info("<<<<<<<<<-------- CALL CREATE DYN PROPERTY -> " + initialValue.toString());
+		
+		CREATED_PROPERTIES.put(dynamicProperty.toString(), dynamicProperty);
+		
 		return dynamicProperty;
 	}
 
@@ -75,51 +77,60 @@ public class DynamicPropertyFactory<T> {
 	 */
 	public static <T> DynamicProperty<T> create(Callable<T> read, Observer<T> write) {
 
-		DynamicProperty<T> returnval = new DynamicPropertyWrapper<T>(write, read);
-		returnval.subscribe(write);
-		return returnval;
+		DynamicProperty<T> dynamicProperty = new DynamicPropertyWrapper<T>(write, read);
+		
+		CREATED_PROPERTIES.put(dynamicProperty.toString(), dynamicProperty);
+		return dynamicProperty;
 	}
 
-	private static final class DynamicPropertyWrapper<T> implements DynamicProperty<T> {
-
-		private final Observer<T> write;
-		private final Callable<T> read;
+	/**
+	 * Nested Class to wrap the DynamicProperty Implementation.
+	 * @author erasmodominguezjimenez
+	 * @param <T>
+	 */
+private static final class DynamicPropertyWrapper<T> implements DynamicProperty<T> {
+		
 		private volatile T property;
 		
-		private final Set<Closeable> callbacks = new CopyOnWriteArraySet<Closeable>();
+		private final Set<Observer> callbacks = new CopyOnWriteArraySet<Observer>();
 
-		private DynamicPropertyWrapper(Observer<T> write, Callable<T> read) {
-			this.write = write;
-			this.read = read;
+		//Constructor
+		protected DynamicPropertyWrapper(Observer<T> write, Callable<T> read) {
 			try {
-				this.property = read.call();
+				setProperty(write,read.call(),true);
 			} catch (Exception e) {
 				logger.error("Error in DynamicPropertyWrapper Constructor " + e.getMessage());
 				e.printStackTrace();
 			}
 		}
-
-		public DynamicPropertyWrapper(T initialValue) {
-			if(property!=null && !(property.equals(initialValue))) {
-				property = initialValue;
-			}
-			write = new Observer<T>() {
-			      @Override
-			      public void observe(T value) {
-			    
-			      }
-			    };
-			subscribe(write);
-			read = null;
-			addCallback(new Closeable() {
-				@Override
-				public void close() throws IOException {
-					// TODO Auto-generated method stub
-					
-				}
-			});
-
+        
+		//Constructor
+		protected DynamicPropertyWrapper(T initialValue) {
+			
+			setProperty(null ,initialValue, true);
 		}
+		/**
+		 * 
+		 * @param write
+		 * @param value
+		 * @param InitializeProperty Used to identify if the set Value was call from Create Method or if is an update - set property call.
+		 */
+		private  void setProperty(Observer<T> write, T value, boolean InitializeProperty) {
+
+			if(InitializeProperty) {
+				property = value;
+				return;
+			}
+			
+			//If this method was not invoked from Create method, is not a new Dynamic Property so , we can consider that is "an update"
+			property = value;
+			if (write !=null) {
+				subscribe(write);
+			    callbacks.forEach(call -> call.notify());	
+			}
+			
+		}
+
 
 		@Override
 		public synchronized T getValue() {
@@ -128,47 +139,20 @@ public class DynamicPropertyFactory<T> {
 
 		@Override
 		public synchronized void setValue(T value) {
-
-			logger.debug("CREATE PROPERTY COMPLEX ----- SET VALUE -> " + value.toString());
-			if (read != null) {
-				try {
-					if (!(read.call().equals(value))) {
-						property = value;
-					} else {
-						property = read.call();
-						write.observe(value);
-						subscribe(write);
-					}
-				} catch (Exception e) {
-					logger.error(e.getMessage());
-				}
-			} else {
-				property = value;
-			}
+             
+			setProperty(null, value,false);
 		}
 
 		@Override
 		public Closeable subscribe(Observer<T> callback) {
 			Closeable cls = new Closeable() {
+				
 				@Override
 				public void close() throws IOException {
-					logger.debug("CREATE PROPERTY COMPLEX ----- SUBSCRIBE-> " + callback.toString());
-					notify();
+					callbacks.add(callback);
 				}
 			};
-			addCallback(cls);
 			return cls;
-		}
-
-		public void addCallback(Closeable callback) {
-			if (callback != null) {
-				callbacks.add(callback);
-			}
-		}
-
-		public void removeAllCallbacks() {
-			final Set<Closeable> callbacksToRemove = new HashSet<Closeable>(callbacks);
-			callbacks.removeAll(callbacksToRemove);
 		}
 	}
 }
